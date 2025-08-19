@@ -16,6 +16,7 @@ Functions:
 import re
 import subprocess
 import json
+import os
 from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 
@@ -25,16 +26,24 @@ class DynamicSubLedgerProcessor:
     """
     
     def __init__(self, mongodb_container: str = "financial_data_mongodb", 
-                 collection_name: str = "derivedSubLedgerRollup"):
+                 collection_name: str = "derivedSubLedgerRollup",
+                 db_name: str = "financial_data"):
         """
         Initialize the processor
         
         Args:
             mongodb_container: Name of the MongoDB Docker container
             collection_name: Name of the MongoDB collection containing ledger definitions
+            db_name: Name of the MongoDB database
         """
         self.mongodb_container = mongodb_container
         self.collection_name = collection_name
+        self.db_name = db_name
+        
+        # Get credentials from environment variables
+        self.db_username = os.getenv('MONGO_USERNAME', 'admin')
+        self.db_password = os.getenv('MONGO_PASSWORD', 'password123')
+        
         self.ledger_definitions = []
         self.results = []
         
@@ -49,8 +58,8 @@ class DynamicSubLedgerProcessor:
             # Query the MongoDB collection
             cmd = [
                 "docker", "exec", self.mongodb_container,
-                "mongosh", "-u", "admin", "-p", "password123",
-                "--authenticationDatabase", "admin", "financial_data",
+                "mongosh", "-u", self.db_username, "-p", self.db_password,
+                "--authenticationDatabase", "admin", self.db_name,
                 "--eval", f"""
                 db.{self.collection_name}.find({{status: 'active'}}).forEach(function(doc) {{
                     print(JSON.stringify(doc));
@@ -198,8 +207,8 @@ class DynamicSubLedgerProcessor:
             # Create the mongosh command
             cmd = [
                 "docker", "exec", self.mongodb_container,
-                "mongosh", "-u", "admin", "-p", "password123",
-                "--authenticationDatabase", "admin", "financial_data",
+                "mongosh", "-u", self.db_username, "-p", self.db_password,
+                "--authenticationDatabase", "admin", self.db_name,
                 "--eval", f"db.{source_table}.aggregate({pipeline}).forEach(function(doc) {{ print(JSON.stringify(doc)); }});",
                 "--quiet"
             ]

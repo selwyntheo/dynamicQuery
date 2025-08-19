@@ -6,6 +6,7 @@ Script to migrate dynamicSubLedger.csv data to MongoDB collection
 import csv
 import subprocess
 import json
+import os
 from datetime import datetime
 
 def read_csv_data(csv_file_path: str) -> list:
@@ -41,23 +42,25 @@ def read_csv_data(csv_file_path: str) -> list:
         print(f"Error reading CSV file: {e}")
         return []
 
-def create_mongodb_collection(collection_name: str, mongodb_container: str = "financial_data_mongodb") -> bool:
+def create_collection_with_schema(container_name: str = "financial_data_mongodb"):
     """
-    Create a new MongoDB collection with validation schema
+    Create the derivedSubLedgerRollup collection with validation schema
     
     Args:
-        collection_name: Name of the collection to create
-        mongodb_container: Name of the MongoDB Docker container
-        
-    Returns:
-        True if successful, False otherwise
+        container_name: Name of the MongoDB Docker container
     """
+    # Get credentials from environment
+    username = os.getenv('MONGO_USERNAME', 'admin')
+    password = os.getenv('MONGO_PASSWORD', 'password123')
+    database = os.getenv('MONGO_DATABASE_NAME', 'financial_data')
     try:
+        collection_name = "derivedSubLedgerRollup"
+        
         # Create collection with validation schema
         create_cmd = [
-            "docker", "exec", mongodb_container,
-            "mongosh", "-u", "admin", "-p", "password123",
-            "--authenticationDatabase", "admin", "financial_data",
+            "docker", "exec", container_name,
+            "mongosh", "-u", username, "-p", password,
+            "--authenticationDatabase", "admin", database,
             "--eval", f"""
             db.createCollection('{collection_name}', {{
               validator: {{
