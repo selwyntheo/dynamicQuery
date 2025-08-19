@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
 Alternative MongoDB import using mongoimport command
+Secure version using environment variables
 """
 
 import json
 import subprocess
 import os
 
+def get_mongo_credentials():
+    """Get MongoDB credentials from environment variables"""
+    return {
+        'username': os.getenv('MONGO_USERNAME', 'admin'),
+        'password': os.getenv('MONGO_PASSWORD', 'password123'),
+        'database': os.getenv('MONGO_DATABASE_NAME', 'financial_data'),
+        'container': os.getenv('MONGO_CONTAINER_NAME', 'financial_data_mongodb')
+    }
+
 def import_with_mongoimport():
     """
     Import JSON data using mongoimport command
     """
+    creds = get_mongo_credentials()
     json_file = "/Volumes/D/Ai/python/dataset/dataNAV_sample.json"
     
     # Read and process the JSON file
@@ -37,12 +48,12 @@ def import_with_mongoimport():
     
     # Use mongoimport via docker exec
     cmd = [
-        "docker", "exec", "financial_data_mongodb",
+        "docker", "exec", creds['container'],
         "mongoimport",
-        "--username", "admin",
-        "--password", "password123",
+        "--username", creds['username'],
+        "--password", creds['password'],
         "--authenticationDatabase", "admin",
-        "--db", "financial_data",
+        "--db", creds['database'],
         "--collection", "dataNAV",
         "--file", "/tmp/dataNAV_import.jsonl",
         "--drop"
@@ -70,11 +81,11 @@ def import_with_mongoimport():
         
         # Verify import
         verify_cmd = [
-            "docker", "exec", "financial_data_mongodb",
+            "docker", "exec", creds['container'],
             "mongosh",
-            "-u", "admin", "-p", "password123",
+            "-u", creds['username'], "-p", creds['password'],
             "--authenticationDatabase", "admin",
-            "financial_data",
+            creds['database'],
             "--eval", "print('Total records: ' + db.dataNAV.countDocuments({})); db.dataNAV.findOne()"
         ]
         

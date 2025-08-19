@@ -1,33 +1,43 @@
 #!/usr/bin/env python3
 """
 Simple MongoDB connection test
+Secure version using environment variables
 """
 
 from pymongo import MongoClient
+import os
 import sys
+
+def get_mongo_credentials():
+    """Get MongoDB credentials from environment variables"""
+    return {
+        'username': os.getenv('MONGO_USERNAME', 'admin'),
+        'password': os.getenv('MONGO_PASSWORD', 'password123'),
+        'database': os.getenv('MONGO_DATABASE_NAME', 'financial_data'),
+        'host': 'localhost',
+        'port': 27017
+    }
 
 def test_connections():
     """
     Test various connection strings
     """
     
+    creds = get_mongo_credentials()
+    
     # Test cases
     test_cases = [
         {
-            "name": "Admin with authSource=admin", 
-            "uri": "mongodb://admin:password123@localhost:27017/?authSource=admin"
+            "name": f"Admin with authSource=admin (User: {creds['username']})", 
+            "uri": f"mongodb://{creds['username']}:{creds['password']}@{creds['host']}:{creds['port']}/?authSource=admin"
         },
         {
-            "name": "Admin direct to financial_data", 
-            "uri": "mongodb://admin:password123@localhost:27017/financial_data?authSource=admin"
-        },
-        {
-            "name": "Financial user with authSource=financial_data", 
-            "uri": "mongodb://financial_user:financial_pass@localhost:27017/financial_data?authSource=financial_data"
+            "name": f"Admin direct to {creds['database']} (User: {creds['username']})", 
+            "uri": f"mongodb://{creds['username']}:{creds['password']}@{creds['host']}:{creds['port']}/{creds['database']}?authSource=admin"
         },
         {
             "name": "No auth (should fail)", 
-            "uri": "mongodb://localhost:27017/financial_data"
+            "uri": f"mongodb://{creds['host']}:{creds['port']}/{creds['database']}"
         }
     ]
     
