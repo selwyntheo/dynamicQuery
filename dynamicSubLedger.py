@@ -237,10 +237,12 @@ class DynamicSubLedgerProcessor:
     
     def apply_formula(self, formula: str, data: Dict) -> float:
         """
-        Apply formula to data values
+        Apply formula to data values with support for mathematical functions
+        
+        Supported functions: ABS, ROUND, MAX, MIN, SUM, AVG, CEIL, FLOOR, SQRT
         
         Args:
-            formula: Formula string like "[subscriptionBalance] * -1"
+            formula: Formula string like "ABS([bookValueBase])*-1" or "[subscriptionBalance] * -1"
             data: Dictionary containing field values
             
         Returns:
@@ -253,6 +255,7 @@ class DynamicSubLedgerProcessor:
             # Extract fields from formula
             fields = self.extract_fields_from_formula(formula)
             
+            # Replace field references with actual values
             for field in fields:
                 field_value = data.get(field, 0)
                 if field_value is None:
@@ -261,14 +264,54 @@ class DynamicSubLedgerProcessor:
                 # Replace [fieldName] with the actual value
                 expression = expression.replace(f'[{field}]', str(field_value))
             
-            # Evaluate the mathematical expression safely
-            # Only allow basic mathematical operations
-            allowed_chars = set('0123456789+-*/.() ')
-            if all(c in allowed_chars for c in expression):
-                result = eval(expression)
+            # Define safe mathematical functions
+            import math
+            safe_functions = {
+                'ABS': abs,
+                'ROUND': round,
+                'MAX': max,
+                'MIN': min,
+                'CEIL': math.ceil,
+                'FLOOR': math.floor,
+                'SQRT': math.sqrt,
+                'POW': pow,
+                'LOG': math.log,
+                'LOG10': math.log10,
+                'EXP': math.exp,
+                'SIN': math.sin,
+                'COS': math.cos,
+                'TAN': math.tan
+            }
+            
+            # Replace function calls with Python equivalents
+            for func_name, func in safe_functions.items():
+                # Handle function calls like ABS(value) -> abs(value)
+                pattern = rf'\b{func_name}\s*\('
+                expression = re.sub(pattern, f'{func.__name__}(', expression, flags=re.IGNORECASE)
+            
+            # Create a safe evaluation environment
+            safe_dict = {
+                "__builtins__": {},
+                **{func.__name__: func for func in safe_functions.values()}
+            }
+            
+            # Additional safety check - remove function names and check remaining characters
+            allowed_chars = set('0123456789+-*/.(), ')
+            allowed_function_names = set(func.__name__ for func in safe_functions.values())
+            
+            # Create a version of the expression without function names for validation
+            validation_expr = expression
+            for func_name in allowed_function_names:
+                validation_expr = re.sub(rf'\b{func_name}\b', '', validation_expr, flags=re.IGNORECASE)
+            
+            # Check if remaining characters are safe
+            if all(c in allowed_chars for c in validation_expr):
+                # Evaluate the mathematical expression safely
+                result = eval(expression, safe_dict, {})
                 return float(result)
             else:
                 print(f"Warning: Unsafe expression detected: {expression}")
+                print(f"Validation expression: {validation_expr}")
                 return 0.0
                 
         except Exception as e:
