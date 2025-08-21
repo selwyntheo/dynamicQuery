@@ -124,14 +124,15 @@ class DynamicSubLedgerProcessor:
                 
         return fields
     
-    def build_mongodb_query(self, source_table: str, filter_condition: str, fields: List[str]) -> str:
+    def build_mongodb_query(self, source_table: str, filter_condition: str, fields: List[str], ledger_field: str = None) -> str:
         """
         Build MongoDB aggregation query
         
         Args:
             source_table: Name of the source collection
             filter_condition: Filter condition for the query
-            fields: List of fields to select
+            fields: List of fields to select for calculations
+            ledger_field: Optional ledger field name for dynamic lookup
             
         Returns:
             MongoDB aggregation query as string
@@ -144,6 +145,10 @@ class DynamicSubLedgerProcessor:
         
         # Add the fields from the formula
         all_fields = list(set(base_fields + fields))
+        
+        # Add ledger field if it's a dynamic lookup (don't include in sum aggregation)
+        if ledger_field:
+            all_fields.append(ledger_field)
         
         # Build the projection
         projection = {}
@@ -178,17 +183,25 @@ class DynamicSubLedgerProcessor:
         if match_stage:
             pipeline.append({"$match": match_stage})
         
-        pipeline.extend([
-            {"$project": projection},
-            {"$group": {
-                "_id": {
-                    "valuationDt": "$valuationDt",
-                    "account": "$account"
-                },
-                "eagleEntityId": {"$first": "$eagleEntityId"},
-                **{field: {"$sum": f"${field}"} for field in fields}  # Changed to $sum for aggregation
-            }}
-        ])
+        # Group stage - only sum the calculation fields, not the ledger lookup field
+        group_stage = {
+            "_id": {
+                "valuationDt": "$valuationDt",
+                "account": "$account"
+            },
+            "eagleEntityId": {"$first": "$eagleEntityId"}
+        }
+        
+        # Add calculated fields to sum
+        for field in fields:
+            group_stage[field] = {"$sum": f"${field}"}
+        
+        # Add ledger field as lookup (first value, not sum)
+        if ledger_field:
+            group_stage[ledger_field] = {"$first": f"${ledger_field}"}
+        
+        pipeline.append({"$project": projection})
+        pipeline.append({"$group": group_stage})
         
         return json.dumps(pipeline, indent=2)
     
@@ -318,51 +331,12 @@ class DynamicSubLedgerProcessor:
             print(f"Error applying formula '{formula}': {e}")
             return 0.0
     
-    def resolve_ledger_account(self, ledger_definition: str, data: Dict) -> str:
-        """
-        Resolve ledger account definition that may contain field references
-        
-        Args:
-            ledger_definition: Ledger account definition like "3002000110" or "[accountCode]" or "300[accountType]001"
-            data: Dictionary containing field values from the source data
-            
-        Returns:
-            Resolved ledger account string
-        """
-        try:
-            # If no field references, return as-is
-            if '[' not in ledger_definition:
-                return ledger_definition
-            
-            # Extract field references
-            fields = self.extract_fields_from_formula(ledger_definition)
-            
-            if not fields:
-                return ledger_definition
-            
-            # Replace each field reference with its value
-            resolved_account = ledger_definition
-            for field in fields:
-                field_value = data.get(field, '')
-                if field_value is None:
-                    field_value = ''
-                
-                # Convert to string and replace the field reference
-                resolved_account = resolved_account.replace(f'[{field}]', str(field_value))
-            
-            print(f"Resolved ledger account: '{ledger_definition}' -> '{resolved_account}'")
-            return resolved_account
-            
-        except Exception as e:
-            print(f"Error resolving ledger account '{ledger_definition}': {e}")
-            return ledger_definition  # Return original if resolution fails
-    
     def process_ledger_definition(self, definition: Dict) -> List[Dict]:
         """
         Process a single ledger definition
         
         Args:
-            definition: Single ledger definition from MongoDB
+            definition: Single ledger definition from MongoDB collection
             
         Returns:
             List of ledger entries
@@ -374,22 +348,24 @@ class DynamicSubLedgerProcessor:
         ledger_definition = definition.get('ledgerDefinition', '').strip()
         filter_condition = definition.get('filter', '').strip()
         
+        # Check if ledger definition is a dynamic lookup (contains square brackets)
+        ledger_field = None
+        is_dynamic_ledger = False
+        
+        if ledger_definition.startswith('[') and ledger_definition.endswith(']'):
+            # Extract field name from [fieldName]
+            ledger_field = ledger_definition[1:-1]  # Remove brackets
+            is_dynamic_ledger = True
+            print(f"Dynamic ledger account lookup detected: {ledger_field}")
+        else:
+            print(f"Static ledger account: {ledger_definition}")
+        
         # Extract fields from the formula
         fields = self.extract_fields_from_formula(data_definition)
-        
-        # Check if ledger definition contains field references and extract those too
-        ledger_fields = self.extract_fields_from_formula(ledger_definition)
-        if ledger_fields:
-            print(f"Dynamic ledger account fields detected: {ledger_fields}")
-            # Add ledger fields to the list of fields to fetch
-            fields.extend(ledger_fields)
-            # Remove duplicates while preserving order
-            fields = list(dict.fromkeys(fields))
-        
         print(f"Fields extracted from formula: {fields}")
         
         # Build and execute MongoDB query
-        pipeline = self.build_mongodb_query(source_table, filter_condition, fields)
+        pipeline = self.build_mongodb_query(source_table, filter_condition, fields, ledger_field)
         print(f"MongoDB pipeline: {pipeline}")
         
         query_results = self.execute_mongodb_query(source_table, pipeline)
@@ -404,22 +380,30 @@ class DynamicSubLedgerProcessor:
                 account = result['_id']['account']
                 eagle_entity_id = result.get('eagleEntityId', '')
                 
+                # Determine the ledger account
+                if is_dynamic_ledger:
+                    # Use the value from the lookup field
+                    dynamic_ledger_account = result.get(ledger_field, 'UNKNOWN')
+                    final_ledger_account = str(dynamic_ledger_account)
+                    print(f"Dynamic ledger account for {account}: {final_ledger_account}")
+                else:
+                    # Use the static value
+                    final_ledger_account = ledger_definition
+                
                 # Apply the formula
                 calculated_value = self.apply_formula(data_definition, result)
-                
-                # Resolve ledger account - check if it contains field references
-                resolved_ledger_account = self.resolve_ledger_account(ledger_definition, result)
                 
                 # Create ledger entry
                 ledger_entry = {
                     'ruleName': definition.get('ruleName', ''),
                     'valuationDt': valuation_dt,
                     'account': account,
-                    'eagleLedgerAcct': resolved_ledger_account,
+                    'eagleLedgerAcct': final_ledger_account,
                     'eagleEntityId': eagle_entity_id,
                     'calculatedValue': calculated_value,
                     'dataDefinition': data_definition,
-                    'ledgerDefinition': ledger_definition,  # Store original definition
+                    'ledgerDefinitionType': 'dynamic' if is_dynamic_ledger else 'static',
+                    'ledgerSourceField': ledger_field if is_dynamic_ledger else None,
                     'sourceData': result,
                     'processedAt': datetime.now().isoformat()
                 }
@@ -464,30 +448,53 @@ class DynamicSubLedgerProcessor:
         
         # Group by ledger account
         ledger_summary = {}
+        dynamic_count = 0
+        static_count = 0
+        
         for entry in self.results:
             ledger_acct = entry.get('eagleLedgerAcct', 'Unknown')
+            ledger_type = entry.get('ledgerDefinitionType', 'unknown')
+            
+            if ledger_type == 'dynamic':
+                dynamic_count += 1
+            elif ledger_type == 'static':
+                static_count += 1
+            
             if ledger_acct not in ledger_summary:
                 ledger_summary[ledger_acct] = {
                     'count': 0,
                     'total_value': 0,
-                    'rule_name': entry.get('ruleName', '')
+                    'rule_name': entry.get('ruleName', ''),
+                    'type': ledger_type,
+                    'source_field': entry.get('ledgerSourceField', '')
                 }
             
             ledger_summary[ledger_acct]['count'] += 1
             ledger_summary[ledger_acct]['total_value'] += entry.get('calculatedValue', 0)
         
         # Generate report
-        report = f"\n{'='*60}\n"
+        report = f"\n{'='*80}\n"
         report += f"DYNAMIC SUB-LEDGER PROCESSING SUMMARY\n"
-        report += f"{'='*60}\n"
+        report += f"{'='*80}\n"
         report += f"Total Entries Generated: {len(self.results)}\n"
+        report += f"Static Ledger Accounts: {static_count}\n"
+        report += f"Dynamic Ledger Accounts: {dynamic_count}\n"
         report += f"Processing Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         
-        report += f"{'Ledger Account':<15} {'Rule Name':<20} {'Count':<8} {'Total Value':<15}\n"
-        report += f"{'-'*60}\n"
+        report += f"{'Account':<15} {'Type':<8} {'Rule Name':<20} {'Count':<8} {'Total Value':<15} {'Source Field':<15}\n"
+        report += f"{'-'*88}\n"
         
         for ledger_acct, summary in ledger_summary.items():
-            report += f"{ledger_acct:<15} {summary['rule_name']:<20} {summary['count']:<8} {summary['total_value']:<15,.2f}\n"
+            ledger_type_display = summary['type'][:7] if summary['type'] else 'unknown'
+            source_field_display = summary['source_field'][:14] if summary['source_field'] else ''
+            
+            report += f"{ledger_acct:<15} {ledger_type_display:<8} {summary['rule_name']:<20} {summary['count']:<8} {summary['total_value']:<15,.2f} {source_field_display:<15}\n"
+        
+        # Add legend
+        report += f"\n{'='*80}\n"
+        report += f"LEGEND:\n"
+        report += f"• Static:  Fixed ledger account number\n"
+        report += f"• Dynamic: Ledger account looked up from source data field\n"
         
         return report
     
