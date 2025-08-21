@@ -318,12 +318,51 @@ class DynamicSubLedgerProcessor:
             print(f"Error applying formula '{formula}': {e}")
             return 0.0
     
+    def resolve_ledger_account(self, ledger_definition: str, data: Dict) -> str:
+        """
+        Resolve ledger account definition that may contain field references
+        
+        Args:
+            ledger_definition: Ledger account definition like "3002000110" or "[accountCode]" or "300[accountType]001"
+            data: Dictionary containing field values from the source data
+            
+        Returns:
+            Resolved ledger account string
+        """
+        try:
+            # If no field references, return as-is
+            if '[' not in ledger_definition:
+                return ledger_definition
+            
+            # Extract field references
+            fields = self.extract_fields_from_formula(ledger_definition)
+            
+            if not fields:
+                return ledger_definition
+            
+            # Replace each field reference with its value
+            resolved_account = ledger_definition
+            for field in fields:
+                field_value = data.get(field, '')
+                if field_value is None:
+                    field_value = ''
+                
+                # Convert to string and replace the field reference
+                resolved_account = resolved_account.replace(f'[{field}]', str(field_value))
+            
+            print(f"Resolved ledger account: '{ledger_definition}' -> '{resolved_account}'")
+            return resolved_account
+            
+        except Exception as e:
+            print(f"Error resolving ledger account '{ledger_definition}': {e}")
+            return ledger_definition  # Return original if resolution fails
+    
     def process_ledger_definition(self, definition: Dict) -> List[Dict]:
         """
         Process a single ledger definition
         
         Args:
-            definition: Single ledger definition from CSV
+            definition: Single ledger definition from MongoDB
             
         Returns:
             List of ledger entries
@@ -337,6 +376,16 @@ class DynamicSubLedgerProcessor:
         
         # Extract fields from the formula
         fields = self.extract_fields_from_formula(data_definition)
+        
+        # Check if ledger definition contains field references and extract those too
+        ledger_fields = self.extract_fields_from_formula(ledger_definition)
+        if ledger_fields:
+            print(f"Dynamic ledger account fields detected: {ledger_fields}")
+            # Add ledger fields to the list of fields to fetch
+            fields.extend(ledger_fields)
+            # Remove duplicates while preserving order
+            fields = list(dict.fromkeys(fields))
+        
         print(f"Fields extracted from formula: {fields}")
         
         # Build and execute MongoDB query
@@ -358,15 +407,19 @@ class DynamicSubLedgerProcessor:
                 # Apply the formula
                 calculated_value = self.apply_formula(data_definition, result)
                 
+                # Resolve ledger account - check if it contains field references
+                resolved_ledger_account = self.resolve_ledger_account(ledger_definition, result)
+                
                 # Create ledger entry
                 ledger_entry = {
                     'ruleName': definition.get('ruleName', ''),
                     'valuationDt': valuation_dt,
                     'account': account,
-                    'eagleLedgerAcct': ledger_definition,
+                    'eagleLedgerAcct': resolved_ledger_account,
                     'eagleEntityId': eagle_entity_id,
                     'calculatedValue': calculated_value,
                     'dataDefinition': data_definition,
+                    'ledgerDefinition': ledger_definition,  # Store original definition
                     'sourceData': result,
                     'processedAt': datetime.now().isoformat()
                 }
